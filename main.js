@@ -317,21 +317,88 @@ return fn()
   return final;
 }
 
-/* ===================== CLI ===================== */
+/* ===================== Render Web Server + CLI ===================== */
 if (typeof require !== "undefined" && require.main === module) {
   const fs = require("fs");
   const args = process.argv.slice(2);
-  if (args.length === 0) {
-    console.error("Usage: node main.js <input.lua> [output.lua]");
-    process.exit(1);
-  }
-  const input = fs.readFileSync(args[0], "utf8");
-  const result = obfuscate(input);
-  if (args[1]) {
-    fs.writeFileSync(args[1], result);
-    console.error("[리트냥이] saved →", args[1]);
+
+  // If input arguments are supplied, preserve the original CLI behavior.
+  if (args.length > 0) {
+    const input = fs.readFileSync(args[0], "utf8");
+    const result = obfuscate(input);
+    if (args[1]) {
+      fs.writeFileSync(args[1], result);
+      console.error("[리트냥이] saved →", args[1]);
+    } else {
+      process.stdout.write(result);
+    }
   } else {
-    process.stdout.write(result);
+    // Render Web Service mode: no input file is expected.
+    const http = require("http");
+    const PORT = Number(process.env.PORT) || 3000;
+    const MAX_BODY = 1_000_000;
+
+    const page = `<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>리트냥이 Lua Obfuscator</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#0d1117;color:#e6edf3;font-family:system-ui,-apple-system,sans-serif;padding:28px}
+main{max-width:900px;margin:0 auto}h1{font-size:25px}p{color:#9da7b3}textarea{width:100%;min-height:280px;background:#161b22;color:#e6edf3;border:1px solid #30363d;border-radius:10px;padding:14px;font:13px/1.5 monospace;resize:vertical}
+button{margin:12px 8px 12px 0;padding:11px 18px;border:0;border-radius:8px;background:#8b5cf6;color:white;font-weight:700;font-size:14px}button:disabled{opacity:.6}#status{min-height:24px}label{display:block;margin:16px 0 8px;font-weight:600}
+</style></head><body><main><h1>리트냥이 Lua / Luau Obfuscator</h1><p>Lua 코드를 입력하고 난독화 버튼을 눌러주세요.</p>
+<label for="source">원본 코드</label><textarea id="source" placeholder="-- Lua / Luau code"></textarea>
+<button id="run">난독화하기</button><button id="copy" type="button">결과 복사</button><div id="status" role="status"></div>
+<label for="result">난독화 결과</label><textarea id="result" readonly placeholder="결과가 여기에 표시됩니다"></textarea>
+<script>
+const run=document.getElementById('run'),src=document.getElementById('source'),out=document.getElementById('result'),status=document.getElementById('status');
+run.addEventListener('click',async()=>{if(!src.value.trim()){status.textContent='먼저 Lua 코드를 입력해주세요.';return}run.disabled=true;status.textContent='처리 중...';try{const r=await fetch('/obfuscate',{method:'POST',headers:{'Content-Type':'text/plain; charset=utf-8'},body:src.value});const data=await r.text();if(!r.ok)throw new Error(data||'요청에 실패했습니다.');out.value=data;status.textContent='난독화가 완료됐습니다.'}catch(e){status.textContent='오류: '+e.message}finally{run.disabled=false}});
+document.getElementById('copy').addEventListener('click',async()=>{if(!out.value){status.textContent='복사할 결과가 없습니다.';return}try{await navigator.clipboard.writeText(out.value);status.textContent='결과를 복사했습니다.'}catch(e){status.textContent='복사 권한이 없어 직접 선택해 복사해주세요.'}});
+</script></main></body></html>`;
+
+    const server = http.createServer((req, res) => {
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      if (req.method === "GET" && (req.url === "/" || req.url === "/index.html")) {
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        return res.end(page);
+      }
+      if (req.method === "GET" && req.url === "/health") {
+        res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+        return res.end("OK");
+      }
+      if (req.method === "POST" && req.url === "/obfuscate") {
+        let body = "";
+        req.on("data", chunk => {
+          body += chunk;
+          if (Buffer.byteLength(body) > MAX_BODY) {
+            res.writeHead(413, { "Content-Type": "text/plain; charset=utf-8" });
+            res.end("요청 크기가 너무 큽니다. 1MB 이하로 입력해주세요.");
+            req.destroy();
+          }
+        });
+        req.on("end", () => {
+          if (res.writableEnded) return;
+          try {
+            if (!body.trim()) {
+              res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+              return res.end("Lua 코드를 입력해주세요.");
+            }
+            const output = obfuscate(body, {});
+            res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+            res.end(output);
+          } catch (err) {
+            res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+            res.end(err.message || "난독화 처리 중 오류가 발생했습니다.");
+          }
+        });
+        return;
+      }
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Not found");
+    });
+
+    server.listen(PORT, "0.0.0.0", () => {
+      console.log(`[리트냥이] Web server listening on port ${PORT}`);
+    });
   }
 }
 
